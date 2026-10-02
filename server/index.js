@@ -4,6 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as store from "./db.js";
 import * as auth from "./auth.js";
+import * as serial from "./serial.js";
+import * as camera from "./camera.js";
+import { classifyPNS, GRADE_TABLE } from "./grading.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(here, "..", "dist");
@@ -64,6 +67,64 @@ async function handleApi(req, res, url) {
     return send(res, 404, { error: "Not found" });
   }
 
+  // ---- device I/O (unauthenticated hardware access) ----
+  if (parts[0] === "devices") {
+    // Probe endpoints - check real device connectivity
+    if (parts[1] === "probe" && parts[2] === "uart" && method === "GET") {
+      return send(res, 200, serial.probe());
+    }
+    if (parts[1] === "probe" && parts[2] === "cam" && method === "GET") {
+      return send(res, 200, camera.probe());
+    }
+
+    // SSE stream of live serial readings from /dev/copra-uart
+    if (parts[1] === "stream" && method === "GET") {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      res.write(": connected\n\n");
+      serial.subscribe(res);
+      const ping = setInterval(() => res.write(": ping\n\n"), 25000);
+      req.on("close", () => { clearInterval(ping); serial.unsubscribe(res); });
+      return;
+    }
+
+    // Latest reading snapshot
+    if (parts[1] === "reading" && parts[2] === "latest" && method === "GET") {
+      const reading = serial.getLatest();
+      return reading ? send(res, 200, reading) : send(res, 204);
+    }
+
+    return send(res, 404, { error: "Not found" });
+  }
+
+  // ---- camera (unauthenticated hardware access) ----
+  if (parts[0] === "camera") {
+    // MJPEG live stream from /dev/copra-cam
+    if (parts[1] === "stream" && method === "GET") {
+      return camera.streamMjpeg(req, res);
+    }
+
+    // Capture a single frame + optional contour analysis
+    if (parts[1] === "capture" && method === "POST") {
+      let frame;
+      try {
+        frame = camera.captureFrame();
+      } catch (err) {
+        return send(res, 503, { error: err.message });
+      }
+
+      const contour = camera.analyzeContour(frame);
+      const base64 = "data:image/jpeg;base64," + frame.toString("base64");
+
+      return send(res, 200, {
+        image: base64,
+        contour: contour,            // null if OpenCV is unavailable
+        sensor: serial.getLatest(),  // attach the latest sensor reading
+      });
+    }
+
+    return send(res, 404, { error: "Not found" });
+  }
+
   // everything below needs a signed-in user
   if (!auth.userFromToken(token)) return send(res, 401, { error: "Authentication required" });
 
@@ -108,6 +169,14 @@ async function handleApi(req, res, url) {
       return ok ? send(res, 204) : send(res, 404, { error: "Not found" });
     }
   }
+
+  // ---- PNS/BAFS 43:2009 grading (authenticated) ----
+  if (parts[0] === "grade" && method === "POST") {
+    const body = await readBody(req);
+    const result = classifyPNS(body);
+    return send(res, 200, { ...result, table: GRADE_TABLE });
+  }
+
   return send(res, 404, { error: "Not found" });
 }
 
@@ -136,4 +205,8 @@ http
       else res.end();
     }
   })
-  .listen(PORT, () => console.log(`CopraSense API on http://localhost:${PORT} (db: ${process.env.DB_PATH || "server/data/coprasense.db"})`));
+  .listen(PORT, () => {
+    console.log(`CopraSense API on http://localhost:${PORT} (db: ${process.env.DB_PATH || "server/data/coprasense.db"})`);
+    // Start the serial reader — will log a warning if /dev/copra-uart is absent.
+    serial.start();
+  });

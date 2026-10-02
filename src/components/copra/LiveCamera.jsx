@@ -9,6 +9,7 @@ export default function LiveCamera({ onOpenSettings }) {
   const connected = devices.cam;
   const [scanY, setScanY] = useState(0);
   const [ts, setTs] = useState(new Date());
+  const [streamError, setStreamError] = useState(false);
 
   useEffect(() => {
     if (!connected) return;
@@ -27,6 +28,11 @@ export default function LiveCamera({ onOpenSettings }) {
     return () => cancelAnimationFrame(raf);
   }, [connected]);
 
+  // Reset stream error when connection state changes
+  useEffect(() => {
+    setStreamError(false);
+  }, [connected]);
+
   return (
     <div className="p-5" style={surfaceCard}>
       <div className="flex items-center justify-between mb-3">
@@ -39,7 +45,20 @@ export default function LiveCamera({ onOpenSettings }) {
       <div className="relative rounded-[12px] overflow-hidden" style={{ background: "#0c1410", aspectRatio: "4/3" }}>
         {connected ? (
           <>
-            <div className="absolute inset-0" style={{ background: "radial-gradient(circle at 50% 45%, #2a3d2e 0%, #14201a 55%, #0a120d 100%)" }} />
+            {/* Real MJPEG stream from /dev/copra-cam via the backend */}
+            {!streamError ? (
+              <img
+                src="/api/camera/stream"
+                alt="Live camera feed from /dev/copra-cam"
+                className="absolute inset-0 w-full h-full object-cover"
+                onError={() => setStreamError(true)}
+              />
+            ) : (
+              /* Fallback if MJPEG stream fails after probe said online */
+              <div className="absolute inset-0" style={{ background: "radial-gradient(circle at 50% 45%, #2a3d2e 0%, #14201a 55%, #0a120d 100%)" }} />
+            )}
+
+            {/* Overlay: crosshairs, scan line, badges — on top of real feed */}
             <div className="absolute left-1/2 top-0 bottom-0 w-px" style={{ background: "rgba(184,134,46,0.25)" }} />
             <div className="absolute top-1/2 left-0 right-0 h-px" style={{ background: "rgba(184,134,46,0.25)" }} />
             <div className="absolute" style={{ left: "32%", top: "30%", width: "36%", height: "40%", border: "1px solid rgba(47,110,72,0.6)", borderRadius: "8px" }} />
@@ -51,10 +70,17 @@ export default function LiveCamera({ onOpenSettings }) {
             <div className="absolute top-3 right-3 text-[11px] px-2 py-1 rounded-md font-mono" style={{ background: "rgba(0,0,0,0.4)", color: "#DCEBE1" }}>
               {ts.toLocaleTimeString()}
             </div>
+            {/* udev-stable symlink — do not change to a raw /dev/videoX path */}
             <div className="absolute bottom-3 left-3 text-[11px] font-mono" style={{ color: "rgba(220,235,225,0.6)" }}>CAM-01 · /dev/copra-cam</div>
             <div className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 text-[11px] font-mono" style={{ color: "rgba(220,235,225,0.6)" }}>
               <ScanLine size={12} /> scan
             </div>
+
+            {streamError && (
+              <div className="absolute bottom-10 left-3 right-3 text-[10.5px] px-2 py-1.5 rounded-md" style={{ background: "rgba(180,69,59,0.7)", color: "#fff" }}>
+                Stream interrupted — device may have disconnected. Re-probe in Settings.
+              </div>
+            )}
           </>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4">

@@ -22,6 +22,7 @@ export const ENTITIES = {
     columns: {
       batch_id: "text", copra_number: "number", moisture: "number",
       color: "text", texture: "text", mold: "bool", image: "text",
+      raw_sensor: "text", contour_area: "number",
     },
   },
 };

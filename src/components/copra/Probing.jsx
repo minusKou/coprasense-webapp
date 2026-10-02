@@ -1,10 +1,10 @@
 import React, { useState } from "react";
-import { Cpu, Camera, RefreshCw, CheckCircle2, XCircle, Activity, Wifi, Clock, Signal, HardDrive } from "lucide-react";
-import { getDevices, setDevices } from "@/lib/devices";
+import { Cpu, Camera, RefreshCw, CheckCircle2, XCircle, Activity, Wifi } from "lucide-react";
+import { setDevices, probeUart, probeCam, useSensorStream } from "@/lib/devices";
 
 const surfaceCard = { background: "#FFFFFF", border: "1px solid #E1DFD5", borderRadius: "14px" };
 const inset = { background: "#F6F5F0", border: "1px solid #E1DFD5", borderRadius: "12px" };
-const fieldCls = "rounded-lg px-2.5 py-2 text-[13.5px] focus:outline-none w-full";
+const fieldCls = "rounded-lg px-2.5 py-2 text-[13px] focus:outline-none w-full";
 const fieldStyle = { border: "1px solid #E1DFD5", background: "#FFFFFF", color: "#1B2A21" };
 
 function Row({ label, value }) {
@@ -17,8 +17,9 @@ function Row({ label, value }) {
 }
 
 export default function Probing() {
-  const [espEndpoint, setEspEndpoint] = useState("/dev/copra-uart");
-  const [camEndpoint, setCamEndpoint] = useState("/dev/copra-cam");
+  // udev-stable symlinks — displayed but not editable; the server uses these directly.
+  const [espEndpoint] = useState("/dev/copra-uart");
+  const [camEndpoint] = useState("/dev/copra-cam");
   const [probingEsp, setProbingEsp] = useState(false);
   const [probingCam, setProbingCam] = useState(false);
   const [esp, setEsp] = useState(null);
@@ -26,50 +27,42 @@ export default function Probing() {
   const [lastEsp, setLastEsp] = useState(null);
   const [lastCam, setLastCam] = useState(null);
 
-  const probeEsp = () => {
+  // Live sensor data from the serial SSE stream
+  const sensorReading = useSensorStream();
+
+  const probeEsp = async () => {
     setProbingEsp(true);
     setEsp(null);
-    setTimeout(() => {
-      const online = Math.random() > 0.12;
-      setEsp({
-        online,
-        firmware: "CopraSense v1.4.2",
-        uptime: "14h 22m",
-        rssi: -52 - Math.floor(Math.random() * 18),
-        freeHeap: 210000 + Math.floor(Math.random() * 30000),
-        ip: espEndpoint,
-        chip: "ESP32-WROOM-32",
-        sensors: "NIR moisture",
-        mac: "A4:CF:12:9B:" + Math.floor(Math.random() * 256).toString(16).toUpperCase().padStart(2, "0") + ":7E",
-      });
+    try {
+      const result = await probeUart();
+      setEsp(result);
       setLastEsp(new Date());
-      setDevices({ esp: online });
+      setDevices({ esp: result.online });
+    } catch (err) {
+      setEsp({ online: false, error: err.message });
+      setDevices({ esp: false });
+    } finally {
       setProbingEsp(false);
-    }, 900);
+    }
   };
 
-  const probeCam = () => {
+  const doProbe = async () => {
     setProbingCam(true);
     setCam(null);
-    setTimeout(() => {
-      const online = Math.random() > 0.12;
-      setCam({
-        online,
-        resolution: "640 × 480 (VGA)",
-        fps: 22 + Math.floor(Math.random() * 6),
-        format: "MJPEG",
-        latencyMs: 110 + Math.floor(Math.random() * 60),
-        exposure: "auto",
-        sensor: "OV2640",
-        ip: camEndpoint,
-      });
+    try {
+      const result = await probeCam();
+      setCam(result);
       setLastCam(new Date());
-      setDevices({ cam: online });
+      setDevices({ cam: result.online });
+    } catch (err) {
+      setCam({ online: false, error: err.message });
+      setDevices({ cam: false });
+    } finally {
       setProbingCam(false);
-    }, 900);
+    }
   };
 
-  const probeAll = () => { probeEsp(); probeCam(); };
+  const probeAll = () => { probeEsp(); doProbe(); };
 
   const fmtTime = (d) => d ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
 
@@ -99,7 +92,8 @@ export default function Probing() {
             </div>
           </div>
 
-          <input value={espEndpoint} onChange={(e) => setEspEndpoint(e.target.value)} className={fieldCls + " mb-2.5"} style={fieldStyle} placeholder="/dev/copra-uart" />
+          {/* udev-stable symlink — display only */}
+          <input value={espEndpoint} readOnly className={fieldCls + " mb-2.5"} style={{ ...fieldStyle, opacity: 0.7, cursor: "default" }} placeholder="/dev/copra-uart" />
 
           <button onClick={probeEsp} disabled={probingEsp}
             className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-semibold text-white disabled:opacity-60 mb-2.5 w-full justify-center"
@@ -118,14 +112,43 @@ export default function Probing() {
               {esp.online && (
                 <>
                   <Row label="Status" value={<span className="inline-flex items-center gap-1.5"><Wifi size={12} style={{ color: "#2F6E48" }} /> Connected</span>} />
-                  <Row label="Chip" value={esp.chip} />
-                  <Row label="Firmware" value={esp.firmware} />
-                  <Row label="Sensor" value={esp.sensors} />
-                  <Row label="IP address" value={esp.ip} />
-                  <Row label="WiFi RSSI" value={<span className="inline-flex items-center gap-1.5"><Signal size={12} /> {esp.rssi} dBm</span>} />
+                  <Row label="Symlink" value={esp.device} />
+                  {esp.resolved_device && <Row label="Resolved" value={esp.resolved_device} />}
+                  <Row label="Baud rate" value={esp.baud} />
+                  <Row label="Last reading" value={esp.last_reading ? new Date(esp.last_reading).toLocaleTimeString() : "—"} />
                 </>
               )}
+              {!esp.online && esp.error && (
+                <p className="text-[11.5px] mt-1 break-all" style={{ color: "#B4453B" }}>
+                  {esp.error}
+                </p>
+              )}
               <p className="text-[11px] mt-1.5" style={{ color: "#8B978E" }}>Last probe: {fmtTime(lastEsp)}</p>
+            </div>
+          )}
+
+          {/* Live sensor readings — real data from /dev/copra-uart */}
+          {sensorReading && esp?.online && (
+            <div className="mt-3 pt-3 border-t" style={{ borderColor: "#E1DFD5" }}>
+              <p className="text-[11.5px] font-semibold mb-1.5" style={{ color: "#2F6E48" }}>Live sensor readings</p>
+              <Row label="F7 corrected (630 nm)" value={sensorReading.derived.f7_corrected} />
+              <Row label="F8 corrected (680 nm)" value={sensorReading.derived.f8_corrected} />
+              <Row label="NIR corrected (910 nm)" value={sensorReading.derived.nir_corrected} />
+              <Row label="Clear corrected" value={sensorReading.derived.clear_corrected} />
+              <Row label="NIR / F7 ratio" value={sensorReading.derived.nir_f7_ratio ?? "—"} />
+              <Row label="NIR / Clear ratio" value={sensorReading.derived.nir_clear_ratio ?? "—"} />
+              <Row label="Touch raw" value={sensorReading.raw.touch_raw} />
+              {sensorReading.derived.color_heuristic && (
+                <Row label="Color (heuristic)" value={
+                  <span className="inline-flex items-center gap-1">
+                    {sensorReading.derived.color_heuristic}
+                    <span className="text-[9px] px-1 py-0.5 rounded" style={{ background: "#F6E9CE", color: "#7A5A1E" }}>estimate</span>
+                  </span>
+                } />
+              )}
+              <p className="text-[10px] mt-1" style={{ color: "#8B978E" }}>
+                Updated: {new Date(sensorReading.received_at).toLocaleTimeString()}
+              </p>
             </div>
           )}
         </div>
@@ -142,9 +165,10 @@ export default function Probing() {
             </div>
           </div>
 
-          <input value={camEndpoint} onChange={(e) => setCamEndpoint(e.target.value)} className={fieldCls + " mb-2.5"} style={fieldStyle} placeholder="/dev/copra-cam" />
+          {/* udev-stable symlink — display only */}
+          <input value={camEndpoint} readOnly className={fieldCls + " mb-2.5"} style={{ ...fieldStyle, opacity: 0.7, cursor: "default" }} placeholder="/dev/copra-cam" />
 
-          <button onClick={probeCam} disabled={probingCam}
+          <button onClick={doProbe} disabled={probingCam}
             className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-semibold text-white disabled:opacity-60 mb-2.5 w-full justify-center"
             style={{ background: "#B8862E" }}>
             <Activity size={14} /> {probingCam ? "Probing…" : "Probe camera"}
@@ -161,11 +185,16 @@ export default function Probing() {
               {cam.online && (
                 <>
                   <Row label="Status" value={<span className="inline-flex items-center gap-1.5"><Wifi size={12} style={{ color: "#2F6E48" }} /> Connected</span>} />
-                  <Row label="Sensor" value={cam.sensor} />
-                  <Row label="Resolution" value={cam.resolution} />
-                  <Row label="Frame rate" value={`${cam.fps} fps`} />
-                  <Row label="Stream latency" value={`${cam.latencyMs} ms`} />
+                  <Row label="Symlink" value={cam.device} />
+                  {cam.resolved_device && <Row label="Resolved" value={cam.resolved_device} />}
+                  <Row label="ffmpeg" value={cam.ffmpeg_available ? "Available" : "Not found"} />
+                  {cam.active_streams > 0 && <Row label="Active streams" value={cam.active_streams} />}
                 </>
+              )}
+              {!cam.online && cam.error && (
+                <p className="text-[11.5px] mt-1 break-all" style={{ color: "#B4453B" }}>
+                  {cam.error}
+                </p>
               )}
               <p className="text-[11px] mt-1.5" style={{ color: "#8B978E" }}>Last probe: {fmtTime(lastCam)}</p>
             </div>

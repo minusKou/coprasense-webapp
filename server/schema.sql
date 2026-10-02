@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS copra_sample (
   color        TEXT NOT NULL CHECK (color IN ('standard', 'slightly-dark', 'dark')),
   texture      TEXT NOT NULL CHECK (texture IN ('firm', 'soft', 'brittle')),
   mold         INTEGER NOT NULL DEFAULT 0,
-  image        TEXT
+  image        TEXT,
+  raw_sensor   TEXT,
+  contour_area INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sample_batch ON copra_sample (batch_id);
 CREATE INDEX IF NOT EXISTS idx_sample_created ON copra_sample (created_date);
